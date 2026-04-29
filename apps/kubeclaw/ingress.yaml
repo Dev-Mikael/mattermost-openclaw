@@ -1,0 +1,62 @@
+# apps/kubeclaw/ingress.yaml
+#
+# Exposes the OpenClaw Gateway UI at openclaw.modumichael.me.
+# ${DOMAIN} is substituted by Flux postBuild from the cluster-values ConfigMap.
+#
+# SERVICE BACKEND:
+#   The backend service is named "kubeclaw" on port 18789.
+#   The openclaw-operator creates a Service named after the OpenClawInstance
+#   (spec.metadata.name = "kubeclaw" in openclawinstance.yaml), so the Service
+#   name matches this Ingress backend automatically.
+#
+# DNS REQUIREMENT:
+#   Add an A record at your registrar:
+#     Host: openclaw      Type: A      Value: 52.202.179.6 (your SERVER_IP)
+#
+# TLS:
+#   cert-manager issues a Let's Encrypt certificate automatically once DNS
+#   resolves and ports 80/443 are open. The certificate is stored in
+#   secret kubeclaw-tls in the kubeclaw namespace.
+#
+# ACME CHALLENGE POD:
+#   While cert-manager is solving the HTTP-01 challenge, a temporary pod and
+#   Ingress appear in the kubeclaw namespace. They disappear once the cert is
+#   issued. If they persist it means the challenge is failing — check:
+#     kubectl describe challenge -n kubeclaw
+#   Common causes: DNS not pointing to SERVER_IP, or port 80 blocked by AWS SG.
+#   Fix: set DNS A record, open SG port 80, then:
+#     kubectl delete challenge -n kubeclaw --all
+#   cert-manager retries immediately.
+#
+# GATEWAY TOKEN:
+#   After TLS is issued, access the UI with:
+#     kubectl -n kubeclaw get secret kubeclaw-secret \
+#       -o jsonpath='{.data.OPENCLAW_GATEWAY_TOKEN}' | base64 -d
+#     Open: https://openclaw.${DOMAIN}/#token=<token>
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kubeclaw
+  namespace: kubeclaw
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  tls:
+    - hosts:
+        - openclaw.${DOMAIN}
+      secretName: kubeclaw-tls
+  rules:
+    - host: openclaw.${DOMAIN}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kubeclaw
+                port:
+                  number: 18789

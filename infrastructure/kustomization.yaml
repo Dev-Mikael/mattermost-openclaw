@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sealed-secrets/
+  - metallb/
+  - nginx-ingress/
+  - cert-manager/
+  - mattermost-operator/
+  - openclaw-operator/
+# NOTE: metallb-config/ and cert-manager-config/ are NOT listed here.
+# They are applied by separate Flux Kustomizations AFTER this one
+# to avoid CRD timing errors.
+#
+# openclaw-operator/ installs the OpenClawInstance CRD and the operator controller.
+# The apps layer depends on infrastructure being Ready, ensuring the CRD exists
+# before any OpenClawInstance resource in apps/kubeclaw/ is applied.

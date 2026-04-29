@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - helmrelease.yaml
+# FIX: ipaddresspool.yaml is NOT listed here.
+# It lives in infrastructure/metallb-config/ and is applied
+# by the metallb-config Flux Kustomization AFTER MetalLB CRDs exist.

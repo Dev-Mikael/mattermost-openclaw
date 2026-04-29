@@ -1,0 +1,160 @@
+# apps/kubeclaw/litellm.yaml
+#
+# Standalone LiteLLM proxy deployment.
+#
+# WHY THIS EXISTS:
+#   The openclaw-operator does not deploy LiteLLM as part of the instance.
+#   LiteLLM is a separate component that the OpenClaw gateway references as a
+#   model provider at:
+#     http://kubeclaw-litellm.kubeclaw.svc.cluster.local:4000
+#
+# SECRET WIRING (how litellm gets its API keys):
+#   The Deployment uses `envFrom: secretRef: kubeclaw-secret`.
+#   The Sealed Secrets controller decrypts the SealedSecret into a real
+#   Kubernetes Secret containing these keys:
+#     OPENAI_API_KEY     — used by the `openai/gpt-4o` and `openai/gpt-4o-mini` entries
+#     GEMINI_API_KEY     — used by the `gemini/gemini-2.5-pro` model entry
+#     LITELLM_MASTER_KEY — passed as the proxy master key via env var
+#
+#   The proxy_config references api_key as "os.environ/OPENAI_API_KEY"
+#   (LiteLLM's syntax for reading keys from environment variables at startup).
+#   This means the ConfigMap does NOT store any secrets — only routing config.
+#
+# VALIDATION:
+#   After deployment, verify litellm is picking up secrets:
+#     kubectl logs -n kubeclaw deploy/litellm | grep -i "model\|key\|error"
+#   Test the proxy endpoint:
+#     kubectl exec -n kubeclaw deploy/litellm -- \
+#       curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/health/readiness
+#   Should return 200.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-proxy-config
+  namespace: kubeclaw
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/component: proxy
+data:
+  config.yaml: |
+    litellm_settings:
+      drop_params: true
+
+    model_list:
+      - model_name: "gpt-4o"
+        litellm_params:
+          model: "openai/gpt-4o"
+          # api_key is read from OPENAI_API_KEY env var at runtime.
+          # The env var is injected from kubeclaw-secret via envFrom below.
+          api_key: "os.environ/OPENAI_API_KEY"
+
+      - model_name: "gpt-4o-mini"
+        litellm_params:
+          model: "openai/gpt-4o-mini"
+          api_key: "os.environ/OPENAI_API_KEY"
+
+      - model_name: "gemini-2.5-pro"
+        litellm_params:
+          model: "gemini/gemini-2.5-pro"
+          api_key: "os.environ/GEMINI_API_KEY"
+          drop_params: true
+
+    router_settings:
+      routing_strategy: "simple-shuffle"
+      num_retries: 2
+      timeout: 120
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: kubeclaw
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/component: proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm
+        app.kubernetes.io/component: proxy
+    spec:
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-v1.56.8
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/litellm/config.yaml
+            - --port
+            - "4000"
+          ports:
+            - name: http
+              containerPort: 4000
+              protocol: TCP
+          # SECRET INJECTION: all keys from kubeclaw-secret become env vars.
+          # This is how OPENAI_API_KEY, GEMINI_API_KEY, and LITELLM_MASTER_KEY
+          # reach the litellm process. The proxy_config.yaml references them via
+          # os.environ/KEY_NAME syntax — litellm reads them at startup.
+          envFrom:
+            - secretRef:
+                name: kubeclaw-secret
+          env:
+            - name: LITELLM_LOG
+              value: "INFO"
+          volumeMounts:
+            - name: proxy-config
+              mountPath: /etc/litellm
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: 4000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: 4000
+            initialDelaySeconds: 45
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: proxy-config
+          configMap:
+            name: litellm-proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # Service name matches the URL in OpenClawInstance config.raw:
+  #   http://kubeclaw-litellm.kubeclaw.svc.cluster.local:4000
+  name: kubeclaw-litellm
+  namespace: kubeclaw
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/component: proxy
+spec:
+  selector:
+    app.kubernetes.io/name: litellm
+  ports:
+    - name: http
+      port: 4000
+      targetPort: 4000
+      protocol: TCP
+  type: ClusterIP

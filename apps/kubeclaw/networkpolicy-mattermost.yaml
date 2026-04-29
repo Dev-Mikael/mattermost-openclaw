@@ -1,0 +1,33 @@
+# apps/kubeclaw/networkpolicy-mattermost.yaml
+#
+# Supplements the chart's built-in NetworkPolicy (which only opens port 18789 to
+# the ingress-nginx namespace) by also allowing ingress from the mattermost namespace.
+#
+# Why this is needed:
+#   When a Mattermost user runs an oc_* slash command, the Mattermost server POSTs
+#   the callback payload to the callbackUrl configured in channels.mattermost.commands.
+#   That URL resolves to port 18789 on the kubeclaw Gateway pod — inside the cluster.
+#   Without this policy, the Mattermost pod's egress to kubeclaw port 18789 is denied
+#   by the chart's NetworkPolicy, and slash commands silently return no response.
+#
+# The mattermost namespace has the kubernetes.io/metadata.name label automatically
+# applied by Kubernetes (since k8s 1.21+, required by KubeClaw's k8s 1.25+ minimum).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mattermost-slash-callbacks
+  namespace: kubeclaw
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kubeclaw
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mattermost
+      ports:
+        - protocol: TCP
+          port: 18789

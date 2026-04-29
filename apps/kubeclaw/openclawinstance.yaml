@@ -1,0 +1,151 @@
+# apps/kubeclaw/openclawinstance.yaml
+#
+# OpenClawInstance custom resource — managed by the openclaw-operator.
+#
+# WHY THIS REPLACES THE HELMRELEASE:
+#   Previously, apps/kubeclaw/helmrelease.yaml deployed the kubeclaw Helm chart
+#   directly via Flux. Problems with that approach:
+#     1. The chart also tried to create Kubernetes Gateway API resources
+#        (Gateway, HTTPRoute, EnvoyProxy) which require Envoy Gateway CRDs
+#        that are not installed. This caused the HelmRelease to fail on every
+#        Flux reconcile, triggering rollback → crash loop.
+#     2. The Gateway's Service needed a LoadBalancer IP. With MetalLB pool at
+#        172.31.19.108/32 (one IP, already taken by nginx-ingress), no IP was
+#        available — causing a NodePort workaround that exposed the cluster.
+#     3. Direct Helm values management is fragile; postRenderers were patching
+#        around chart bugs rather than fixing root causes.
+#
+#   The openclaw-operator manages OpenClaw instances declaratively via this CRD.
+#   It handles the StatefulSet, Service, PVC, NetworkPolicy and RBAC internally,
+#   with sane defaults and no Gateway API involvement.
+#
+# HOW SECRETS REACH THE POD:
+#   spec.envFrom references kubeclaw-secret (decrypted by Sealed Secrets from
+#   apps/kubeclaw/secrets/sealed-kubeclaw-secret.yaml). The secret contains:
+#     OPENCLAW_GATEWAY_TOKEN — gateway auth token
+#     OPENAI_API_KEY         — OpenAI API key (also read by litellm Deployment)
+#     GEMINI_API_KEY         — Google Gemini API (also read by litellm Deployment)
+#     LITELLM_MASTER_KEY     — litellm proxy master key
+#     MATTERMOST_BOT_TOKEN   — bot token for Mattermost channel integration
+#
+# SERVICE NAME:
+#   The operator creates a Service named after the OpenClawInstance (i.e. "kubeclaw").
+#   This matches the backend in apps/kubeclaw/ingress.yaml (service.name: kubeclaw)
+#   and the callbackUrl in channels.mattermost.commands.
+#
+# MODELS / LITELLM:
+#   Models are NOT configured directly with Anthropic/Gemini API keys here.
+#   Instead, the gateway points to the LiteLLM proxy (apps/kubeclaw/litellm.yaml)
+#   which handles model routing, retries, and load balancing. LiteLLM gets its
+#   own API keys from kubeclaw-secret via envFrom in the litellm Deployment.
+---
+apiVersion: openclaw.rocks/v1alpha1
+kind: OpenClawInstance
+metadata:
+  name: kubeclaw
+  namespace: kubeclaw
+  labels:
+    app.kubernetes.io/managed-by: flux
+spec:
+  # ── Secret injection ──────────────────────────────────────────────────────
+  # All keys in kubeclaw-secret become environment variables in the OpenClaw pod.
+  # Sealed Secrets decrypts the SealedSecret (sealed-kubeclaw-secret.yaml) into
+  # the real kubeclaw-secret before this resource is reconciled.
+  envFrom:
+    - secretRef:
+        name: kubeclaw-secret
+
+  # ── Persistent storage ────────────────────────────────────────────────────
+  # Stores openclaw.json runtime config, memory, workspace files, and any
+  # agent-generated data. Uses the cluster's default StorageClass (local-path).
+  storage:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+  # ── Chromium sidecar ─────────────────────────────────────────────────────
+  # DISABLED: The Chromium sidecar (browser automation) is memory-heavy.
+  # On a t3.medium with Mattermost + Postgres + MinIO + cert-manager already
+  # running, enabling Chromium reliably triggers OOMKill on the kubeclaw pod.
+  # Re-enable once you have dedicated nodes or additional memory.
+  chromium:
+    enabled: false
+
+  # ── OpenClaw configuration (openclaw.json content) ────────────────────────
+  # mode: merge — the operator deep-merges this config with defaults at startup.
+  # This means runtime config changes made by the agent (pairing approvals,
+  # UI settings) are preserved across pod restarts and Flux reconciles.
+  config:
+    mode: merge
+    raw:
+      # ── Model providers ─────────────────────────────────────────────────
+      # LiteLLM acts as a unified proxy. The gateway talks to litellm on
+      # port 4000 (service kubeclaw-litellm in the kubeclaw namespace).
+      # LITELLM_MASTER_KEY is injected via envFrom above.
+      # OPENAI_API_KEY and GEMINI_API_KEY are also in kubeclaw-secret and
+      # are picked up by the litellm Deployment via envFrom.
+      models:
+        mode: merge
+        providers:
+          litellm:
+            baseUrl: "http://kubeclaw-litellm.kubeclaw.svc.cluster.local:4000"
+            apiKey: "os.environ/LITELLM_MASTER_KEY"
+            api: "openai-completions"
+            models:
+              - id: "gpt-4o"
+                name: "GPT-4o"
+                reasoning: false
+                input: ["text", "image"]
+                contextWindow: 128000
+                maxTokens: 16384
+              - id: "gpt-4o-mini"
+                name: "GPT-4o Mini"
+                reasoning: false
+                input: ["text", "image"]
+                contextWindow: 128000
+                maxTokens: 16384
+              - id: "gemini-2.5-pro"
+                name: "Gemini 2.5 Pro"
+                reasoning: true
+                input: ["text", "image"]
+                contextWindow: 1000000
+                maxTokens: 65536
+
+      # ── Gateway ──────────────────────────────────────────────────────────
+      # mode: local  — gateway runs inside the pod, no external Kubernetes
+      #                Gateway API resources are used.
+      # bind: lan    — gateway binds to all interfaces inside the pod so the
+      #                nginx Ingress can reach it on port 18789.
+      gateway:
+        mode: local
+        bind: lan
+
+      # ── Agent defaults ───────────────────────────────────────────────────
+      agents:
+        defaults:
+          model:
+            primary: "litellm/gpt-4o"
+          timeoutSeconds: 600
+          maxConcurrent: 1
+        list:
+          - id: main
+            default: true
+
+      # ── Mattermost channel integration ────────────────────────────────────
+      # baseUrl: internal cluster DNS — no TLS needed for in-cluster comms.
+      # MATTERMOST_BOT_TOKEN is loaded from kubeclaw-secret via envFrom.
+      # callbackUrl: the OpenClaw gateway endpoint that Mattermost POSTs
+      #   slash command payloads to. Uses the Service name "kubeclaw" created
+      #   by the operator for this OpenClawInstance.
+      channels:
+        mattermost:
+          enabled: true
+          baseUrl: "http://mattermost.mattermost.svc.cluster.local:8065"
+          chatmode: oncall
+          dmPolicy: pairing
+          allowFrom: []
+          groupPolicy: open
+          commands:
+            native: true
+            nativeSkills: true
+            callbackUrl: "http://kubeclaw.kubeclaw.svc.cluster.local:18789/api/channels/mattermost/command"

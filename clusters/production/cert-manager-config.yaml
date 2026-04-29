@@ -1,0 +1,24 @@
+# clusters/production/cert-manager-config.yaml
+# FIX: ClusterIssuer requires the cert-manager CRD to exist first.
+# Separating it into its own Kustomization with dependsOn: infrastructure
+# prevents the "no matches for kind ClusterIssuer" error.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cert-manager-config
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  dependsOn:
+    - name: infrastructure    # Wait for cert-manager Helm chart to install CRDs first
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/cert-manager-config
+  prune: true
+  wait: true
+  timeout: 5m0s
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-values

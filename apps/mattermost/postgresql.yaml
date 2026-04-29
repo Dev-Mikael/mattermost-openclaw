@@ -1,0 +1,94 @@
+# apps/mattermost/postgresql.yaml
+# FIX: Using official postgres:15-alpine from docker.io instead of Bitnami chart.
+# Bitnami moved all images to oci.bitnami.com in 2023 — the Helm chart
+# pulls from there by default which requires OCI registry support.
+# The official postgres image is always available on Docker Hub with no auth.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mattermost-db-postgresql
+  namespace: mattermost
+  labels:
+    app: mattermost-postgresql
+spec:
+  selector:
+    app: mattermost-postgresql
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  clusterIP: None   # Headless service — required for StatefulSet DNS
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mattermost-db-postgresql
+  namespace: mattermost
+  labels:
+    app: mattermost-postgresql
+spec:
+  serviceName: mattermost-db-postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mattermost-postgresql
+  template:
+    metadata:
+      labels:
+        app: mattermost-postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: mmuser
+            - name: POSTGRES_DB
+              value: mattermost
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mattermost-db-postgresql
+                  key: password
+            # FIX: Do NOT set PGDATA to a subdirectory manually.
+            # The official postgres image handles /var/lib/postgresql/data
+            # internally — overriding PGDATA causes permission errors.
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, mmuser, -d, mattermost]
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: [pg_isready, -U, mmuser, -d, mattermost]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          # PostgreSQL is the second-highest CPU consumer after Mattermost itself.
+          # On a t3.medium these limits give it sufficient headroom.
+          # On t2 instances the CPU credit exhaustion is what causes the slowdown —
+          # switch to t3 (burstable unlimited) or m6 (fixed) to resolve it.
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
+            # storageClassName: ""  # Uncomment and set for on-prem if needed

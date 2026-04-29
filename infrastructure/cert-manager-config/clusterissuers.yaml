@@ -1,0 +1,39 @@
+# infrastructure/cert-manager-config/clusterissuers.yaml
+# FIX: Applied by cert-manager-config Kustomization which dependsOn infrastructure.
+# This ensures cert-manager CRDs exist before ClusterIssuer is applied.
+#
+# Two issuers:
+#   letsencrypt-staging: use first to test (no rate limits, untrusted cert)
+#   letsencrypt-prod:    use for real deployment (trusted, rate-limited)
+#
+# ${LETSENCRYPT_EMAIL} is substituted by Flux postBuild from cluster-values ConfigMap
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ${LETSENCRYPT_EMAIL}
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ${LETSENCRYPT_EMAIL}
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

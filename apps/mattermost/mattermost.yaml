@@ -1,0 +1,160 @@
+# apps/mattermost/mattermost.yaml
+# This is the Mattermost Custom Resource (CR) — the instruction given to the
+# Mattermost Operator telling it how to deploy Mattermost.
+#
+# FIXES APPLIED:
+#   1. Removed spec.resources — not a valid field in this operator version
+#   2. Removed spec.ingress.ingressClassName — not in schema; use annotation instead
+#   3. Removed nginx configuration-snippet annotation — disabled by NGINX webhook
+#   4. Removed fileStore.operatorManaged — requires MinIO Operator CRD (not installed)
+#   5. Used fileStore.external pointing to standalone MinIO deployment
+#   6. MinIO URL has NO http:// prefix — operator adds the scheme internally
+#   7. Uses kubernetes.io/ingress.class annotation (deprecated but works with this operator)
+#
+# KUBECLAW ADDITIONS:
+#   8. MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS=true — required for script 06 to
+#      create a personal access token for the openclaw-bot via the REST API.
+#   9. Added kubeclaw.kubeclaw.svc.cluster.local to ALLOWEDUNTRUSTEDINTERNALCONNECTIONS
+#      so Mattermost can POST slash command callbacks to the OpenClaw Gateway
+#      via in-cluster ClusterDNS without TLS verification errors.
+apiVersion: installation.mattermost.com/v1beta1
+kind: Mattermost
+metadata:
+  name: mattermost
+  namespace: mattermost
+spec:
+  # "100users" sets replicas=1 which is correct for a single-node cluster.
+  # It does NOT set CPU/memory limits — those are controlled by mattermostEnv
+  # and the resourcePatch below. For t3.medium (2 vCPU, 4GB) this is safe.
+  # ⚠️  Do NOT use t2 instances (t2.medium/t2.large) — they use CPU credits
+  #     which exhaust quickly under sustained load and throttle to ~0.4 vCPU.
+  #     Use t3.medium or t3.large instead (unlimited CPU burst at no extra cost).
+  size: 100users
+
+  # ── Image (pinned for GitOps reproducibility) ─────────────
+  image: mattermost/mattermost-team-edition
+  version: "10.11.14"
+
+  # ── Ingress ────────────────────────────────────────────────
+  # ${DOMAIN} is substituted by Flux postBuild from cluster-values ConfigMap
+  ingress:
+    enabled: true
+    host: ${DOMAIN}
+    annotations:
+      # FIX: Use deprecated annotation — spec.ingress.ingressClassName is not
+      # in this operator version's schema and causes a dry-run failure
+      kubernetes.io/ingress.class: nginx
+      # TLS certificate via cert-manager + Let's Encrypt
+      # For kind/local: comment out this annotation (no real cert possible)
+      # For on-prem:    keep this — real TLS cert will be issued automatically
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+      # FIX: configuration-snippet annotation is REMOVED.
+      # It is blocked by the NGINX admission webhook by default.
+      # WebSocket support is handled via global NGINX config in the HelmRelease.
+    tlsSecret: mattermost-tls
+
+  # ── Database ───────────────────────────────────────────────
+  # Points to the SealedSecret which decrypts to a Secret containing
+  # DB_CONNECTION_STRING used by the Mattermost pod
+  database:
+    external:
+      secret: mattermost-db-credentials
+
+  # ── File Storage ───────────────────────────────────────────
+  # FIX: operatorManaged is REMOVED — it requires the MinIO Operator CRD
+  # which we are not installing. Instead we point to our standalone MinIO.
+  # FIX: URL has NO http:// prefix — the operator adds the scheme itself.
+  #      Using http:// caused: "Endpoint url cannot have fully qualified paths"
+  fileStore:
+    external:
+      url: minio.mattermost.svc.cluster.local:9000
+      bucket: mattermost
+      secret: mattermost-minio-credentials
+
+  # ── App environment variables ─────────────────────────────
+  mattermostEnv:
+    # SITE URL must match EXACTLY what users type in their browser.
+    # This drives: WebSocket connection, push proxy registration, OAuth redirects.
+    # Wrong SITEURL = push proxy registration fails silently on first login.
+    - name: MM_SERVICESETTINGS_SITEURL
+      value: "https://${DOMAIN}"
+
+    # ── Push notifications (mobile: iOS / Android) ──────────────────────────
+    - name: MM_EMAILSETTINGS_SENDPUSHNOTIFICATIONS
+      value: "true"
+    # TPNS — free, works with Team Edition. Swap to push.mattermost.com only
+    # after purchasing a Professional licence (HPNS requires paid plan).
+    - name: MM_EMAILSETTINGS_PUSHNOTIFICATIONSERVER
+      value: "https://push-test.mattermost.com"
+    - name: MM_EMAILSETTINGS_PUSHNOTIFICATIONCONTENTS
+      value: "full"
+    - name: MM_EMAILSETTINGS_PUSHNOTIFICATIONBUFFER
+      value: "1000"
+    - name: MM_EMAILSETTINGS_PUSHNOTIFICATIONTRIGGERCONDITION
+      value: "always"
+
+    # ── Desktop / browser notifications ──────────────────────────────────────
+    - name: MM_EMAILSETTINGS_ENABLEEMAILBATCHING
+      value: "false"
+    - name: MM_SERVICESETTINGS_ENABLEUSERTYPINGMESSAGES
+      value: "true"
+    - name: MM_SERVICESETTINGS_ENABLECHANNELVIEWEDMESSAGES
+      value: "true"
+    - name: MM_SERVICESETTINGS_ALLOWCORSFROM
+      value: ""
+    - name: MM_SERVICESETTINGS_WEBSOCKETURL
+      value: ""
+
+    # ── Internal connections ──────────────────────────────────────────────────
+    # Space-separated list of internal hostnames Mattermost may call outbound:
+    #   minio:     file storage (S3-compatible uploads/downloads)
+    #   kubeclaw:  slash command callback POSTs from Mattermost → OpenClaw Gateway
+    - name: MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS
+      value: "minio.mattermost.svc.cluster.local kubeclaw.kubeclaw.svc.cluster.local"
+
+    # ── Bot and API token support ─────────────────────────────────────────────
+    # EnableBotAccountCreation: allows admin to create bot accounts via UI/API.
+    # EnableUserAccessTokens: required for script 06 to generate a personal
+    #   access token for openclaw-bot via POST /api/v4/users/{id}/tokens.
+    #   Also required at runtime for the bot token to be accepted by Mattermost.
+    - name: MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION
+      value: "true"
+    - name: MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS
+      value: "true"
+
+    # ── Logging and auth ──────────────────────────────────────────────────────
+    - name: MM_LOGSETTINGS_CONSOLELEVEL
+      value: "INFO"
+    - name: MM_EMAILSETTINGS_ENABLESIGNINWITHEMAIL
+      value: "true"
+    - name: MM_EMAILSETTINGS_ENABLESIGNINWITHUSERNAME
+      value: "true"
+    - name: MM_FILESETTINGS_AMAZONS3SSL
+      value: "false"   # MinIO is internal HTTP — no SSL needed inside cluster
+
+#config also has no SMTP settings, which means email notifications (password resets,
+# account verification) will not be functional until SMTP is configured.
+# - name: MM_EMAILSETTINGS_ENABLESMTPAUTH
+#   value: "true"
+# - name: MM_EMAILSETTINGS_SMTPSERVER
+#   value: "smtp.your-provider.com"
+# - name: MM_EMAILSETTINGS_SMTPPORT
+#   value: "587"
+# - name: MM_EMAILSETTINGS_SMTPUSERNAME
+#   valueFrom:
+#     secretKeyRef:
+#       name: mattermost-smtp-credentials
+#       key: username
+# - name: MM_EMAILSETTINGS_SMTPPASSWORD
+#   valueFrom:
+#     secretKeyRef:
+#       name: mattermost-smtp-credentials
+#       key: password
+# - name: MM_EMAILSETTINGS_FEEDBACKEMAIL
+#   value: "noreply@${DOMAIN}"
+# - name: MM_EMAILSETTINGS_REPLYTOADDRESS
+#   value: "noreply@${DOMAIN}"
+# Store SMTP credentials as a SealedSecret following the same pattern in 04-wait-and-seal.sh

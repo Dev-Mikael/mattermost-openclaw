@@ -1,0 +1,83 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: ingress-nginx
+  namespace: flux-system
+spec:
+  interval: 1h0m0s
+  url: https://kubernetes.github.io/ingress-nginx
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: ingress-nginx
+  namespace: ingress-nginx
+spec:
+  interval: 10m0s
+  chart:
+    spec:
+      chart: ingress-nginx
+      version: ">=4.10.0 <5.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: ingress-nginx
+        namespace: flux-system
+      interval: 1h0m0s
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      remediateLastFailure: true
+      retries: 3
+      strategy: rollback
+  values:
+    controller:
+      service:
+        type: LoadBalancer
+        # externalTrafficPolicy: Local preserves real client IPs.
+        # Safe on a single-node cluster — the nginx pod is always local.
+        externalTrafficPolicy: Local
+        # externalIPs makes kube-proxy create iptables DNAT rules for the
+        # server's PRIVATE IP. This is the critical fix for cloud VMs (AWS/GCP/DO):
+        #   - Cloud providers NAT public-ip → private-ip before the packet
+        #     hits the OS, so kube-proxy must intercept on the private IP.
+        #   - MetalLB's pool uses the private IP but L2 ARP can't claim it
+        #     (already assigned to eth0). externalIPs sidesteps this entirely.
+        #   - ${SERVER_PRIVATE_IP} is substituted by Flux postBuild from
+        #     the cluster-values ConfigMap, which 03-bootstrap-flux.sh populates.
+        #   - On kind: SERVER_PRIVATE_IP = 127.0.0.1 (harmless).
+        externalIPs:
+          - ${SERVER_PRIVATE_IP}
+
+      config:
+        proxy-body-size: "100m"
+        proxy-read-timeout: "600"
+        proxy-send-timeout: "600"
+        # Required for Mattermost WebSocket (real-time messaging)
+        # FIX: configuration-snippet annotation is disabled in NGINX by default.
+        # WebSocket is enabled via these global config settings instead.
+        map-hash-bucket-size: "128"
+        use-proxy-protocol: "false"
+        # Enable WebSocket upgrades globally
+        proxy-http-version: "1.1"
+
+      # FIX: Allow snippet annotations if needed in future.
+      # Currently disabled by NGINX admission webhook — leave false
+      # unless you specifically need per-ingress snippets.
+      allowSnippetAnnotations: false
+
+      resources:
+        limits:
+          cpu: 500m
+          memory: 512Mi
+        requests:
+          cpu: 100m
+          memory: 128Mi
+
+    defaultBackend:
+      enabled: true
+      resources:
+        limits:
+          cpu: 20m
+          memory: 32Mi

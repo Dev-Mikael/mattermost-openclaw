@@ -1,0 +1,63 @@
+# infrastructure/openclaw-operator/helmrelease.yaml
+#
+# Installs the openclaw-operator, which provides the OpenClawInstance CRD.
+# The operator watches for OpenClawInstance resources in any namespace and
+# manages the full lifecycle of each OpenClaw agent deployment (StatefulSet,
+# Service, PVC, NetworkPolicy, RBAC).
+#
+# Chart source: oci://ghcr.io/openclaw-rocks/charts/openclaw-operator
+# Artifact Hub: https://artifacthub.io/packages/helm/openclaw-operator/openclaw-operator
+# GitHub:       https://github.com/openclaw-rocks/openclaw-operator
+#
+# ORDERING: This Kustomization is included in the main infrastructure Kustomization
+# (infrastructure/kustomization.yaml). The apps layer depends on infrastructure,
+# which ensures the OpenClawInstance CRD exists before any OpenClawInstance resource
+# in apps/kubeclaw/ is applied.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: openclaw-operator
+  namespace: flux-system
+spec:
+  type: oci
+  url: oci://ghcr.io/openclaw-rocks/charts
+  interval: 1h0m0s
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: openclaw-operator
+  namespace: openclaw-operator-system
+spec:
+  interval: 10m0s
+  chart:
+    spec:
+      chart: openclaw-operator
+      version: ">=0.27.0 <1.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: openclaw-operator
+        namespace: flux-system
+      interval: 1h0m0s
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      remediateLastFailure: true
+      retries: 3
+      strategy: rollback
+  values:
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    # Disable metrics scraping unless you have Prometheus Operator installed
+    metrics:
+      enabled: false

@@ -1,0 +1,20 @@
+# clusters/production/metallb-config.yaml
+# FIX: IPAddressPool requires the MetalLB CRD to exist first.
+# Separating it into its own Kustomization with dependsOn: infrastructure
+# prevents the "no matches for kind IPAddressPool" error.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: metallb-config
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  dependsOn:
+    - name: infrastructure    # Wait for MetalLB Helm chart to install CRDs first
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./infrastructure/metallb-config
+  prune: true
+  wait: true
+  timeout: 5m0s
