@@ -76,7 +76,6 @@ spec:
   # This means runtime config changes made by the agent (pairing approvals,
   # UI settings) are preserved across pod restarts and Flux reconciles.
   config:
-    mode: merge
     raw:
       # ── Model providers ─────────────────────────────────────────────────
       # LiteLLM acts as a unified proxy. The gateway talks to litellm on
