@@ -6,11 +6,11 @@ metadata:
   namespace: flux-system
 data:
   DOMAIN: "modumichael.me"
-  SERVER_IP: "52.202.179.6"
+  SERVER_IP: "18.205.55.95"
   # SERVER_PRIVATE_IP: the IP actually assigned to the host's network interface.
   # On AWS EC2: this is the VPC private IP (e.g. 10.0.1.5).
   # On kind:    same as SERVER_IP (127.0.0.1).
   # Used by nginx-ingress externalIPs so kube-proxy routes cloud-NAT'd traffic to nginx.
-  SERVER_PRIVATE_IP: "172.31.19.108"
+  SERVER_PRIVATE_IP: "172.31.31.127"
   LETSENCRYPT_EMAIL: "modumichael138@gmail.com"
   CLUSTER_NAME: "production"

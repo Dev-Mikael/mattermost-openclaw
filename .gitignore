@@ -1,0 +1,15 @@
+# Secrets — NEVER commit these
+.env
+*.key
+*.pem
+age.agekey
+
+# OS / Editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Temp files
+tmp/
+*.tmp
