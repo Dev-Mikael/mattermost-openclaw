@@ -148,3 +148,5 @@ spec:
             native: true
             nativeSkills: true
             callbackUrl: "http://kubeclaw.kubeclaw.svc.cluster.local:18789/api/channels/mattermost/command"
+          interactions:
+            callbackBaseUrl: "http://kubeclaw.kubeclaw.svc.cluster.local:18789"
