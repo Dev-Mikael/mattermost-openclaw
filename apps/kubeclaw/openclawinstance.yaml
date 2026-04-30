@@ -139,7 +139,7 @@ spec:
       channels:
         mattermost:
           enabled: true
-          baseUrl: "http://mattermost.mattermost.svc.cluster.local:8065"
+          baseUrl: "https://modumichael.me"
           chatmode: oncall
           dmPolicy: pairing
           allowFrom: []
